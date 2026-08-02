@@ -1,6 +1,8 @@
 """Backtest replay engine: walks a set of rebalance dates, scores the
 universe as-of each date (no look-ahead — only data up to that date is
-visible to the score function), picks the top N, and measures forward
+visible to the score function), picks new ideas via the same
+existing-holdings-exclusion / concurrent-position-cap rules
+satellite.ranker.select_top_ideas applies live, and measures forward
 returns over a fixed holding period.
 
 Current limitation: FMP free tier makes point-in-time historical
@@ -11,6 +13,18 @@ end-to-end on real cached price data. Wiring in point-in-time fundamentals
 is phase 2 work (plan.md: "Implement all three factor groups fully" /
 walk-forward weight tuning) — swap in a fundamentals-aware score_fn once
 that exists; run_backtest itself doesn't need to change.
+
+NOTE (2026-08-02): run_backtest used to ignore concurrent holdings
+entirely — it picked the naive top-N by score at every rebalance date
+with no memory of what was already held. Since holding_days is typically
+several times the rebalance step, the same top-scoring symbol could get
+picked over and over across consecutive rebalances, concentrating the
+simulated portfolio in 2-3 names instead of the intended
+MAX_CONCURRENT_POSITIONS-diversified book satellite.ranker enforces live
+— a real fidelity gap, not just a cosmetic one, since it changes what
+risk/drawdown numbers actually mean. Fixed by tracking open positions
+(with their bar-accurate exit dates) and skipping already-held symbols /
+capping total concurrent count at each rebalance, same as the live path.
 """
 
 from __future__ import annotations
@@ -19,6 +33,7 @@ from typing import Callable
 
 import pandas as pd
 
+from satellite.config import MAX_CONCURRENT_POSITIONS
 from satellite.scoring.composite import compute_composite_scores
 from satellite.scoring.technical import raw_technical_metrics, score_technicals
 
@@ -49,6 +64,20 @@ def forward_return(price_df: pd.DataFrame, entry_date: pd.Timestamp, holding_day
     if entry_price == 0 or pd.isna(entry_price):
         return None
     return float(exit_price / entry_price - 1)
+
+
+def position_exit_date(price_df: pd.DataFrame, entry_date: pd.Timestamp, holding_days: int) -> pd.Timestamp | None:
+    """The trading date `holding_days` bars after entry_date — the same
+    bar forward_return measures its exit price on. None if there isn't
+    enough future data yet (mirrors forward_return's availability check),
+    so a position without a resolvable exit is treated as still open
+    through the end of the available data.
+    """
+    close = price_df["Close"]
+    future = close[close.index >= entry_date]
+    if len(future) <= holding_days:
+        return future.index[-1] if len(future) else None
+    return future.index[holding_days]
 
 
 def default_technical_score_fn(
@@ -120,20 +149,40 @@ def run_backtest(
     top_n: int = 5,
     holding_days: int = 42,  # ~2 months of trading days, mid-point of "weeks-months" holding period
     score_fn: ScoreFn = default_technical_score_fn,
+    max_concurrent_positions: int = MAX_CONCURRENT_POSITIONS,
 ) -> pd.DataFrame:
     """Returns a trades DataFrame: one row per (rebalance_date, symbol)
     pick, with columns [date, symbol, score, forward_return].
+
+    Tracks open positions across rebalance dates the same way the live
+    ranker does: a symbol already held is never picked again until its
+    holding period ends, and total concurrent positions are capped at
+    max_concurrent_positions — without this, the same top-scoring symbol
+    can dominate every rebalance since holding_days usually spans several
+    rebalance steps (see this module's docstring).
     """
     symbols = list(price_data.keys())
     records = []
+    open_positions: dict[str, pd.Timestamp] = {}  # symbol -> exit_date
 
     for as_of in rebalance_dates:
+        open_positions = {sym: exit for sym, exit in open_positions.items() if exit > as_of}
+
+        open_slots = max_concurrent_positions - len(open_positions)
+        if open_slots <= 0:
+            continue
+
         scores = score_fn(as_of, symbols, price_data)
         if scores.empty:
             continue
-        picks = scores.sort_values(ascending=False).head(top_n)
+        candidates = scores[~scores.index.isin(open_positions)]
+        picks = candidates.sort_values(ascending=False).head(min(top_n, open_slots))
+
         for symbol, score in picks.items():
             ret = forward_return(price_data[symbol], as_of, holding_days)
+            exit_date = position_exit_date(price_data[symbol], as_of, holding_days)
+            if exit_date is not None:
+                open_positions[symbol] = exit_date
             records.append({"date": as_of, "symbol": symbol, "score": score, "forward_return": ret})
 
     return pd.DataFrame.from_records(records, columns=["date", "symbol", "score", "forward_return"])
