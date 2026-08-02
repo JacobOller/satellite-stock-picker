@@ -19,9 +19,21 @@ from typing import Callable
 
 import pandas as pd
 
+from satellite.scoring.composite import compute_composite_scores
 from satellite.scoring.technical import raw_technical_metrics, score_technicals
 
 ScoreFn = Callable[[pd.Timestamp, list[str], dict[str, pd.DataFrame]], pd.Series]
+
+_FUNDAMENTAL_COLUMNS = [
+    "pe_ratio",
+    "pb_ratio",
+    "fcf_yield",
+    "roe",
+    "gross_margin",
+    "net_margin",
+    "roic",
+    "market_cap",
+]
 
 
 def forward_return(price_df: pd.DataFrame, entry_date: pd.Timestamp, holding_days: int) -> float | None:
@@ -55,6 +67,51 @@ def default_technical_score_fn(
         return pd.Series(dtype=float)
     metrics_df = pd.DataFrame.from_dict(rows, orient="index")
     return score_technicals(metrics_df)
+
+
+def technical_quant_score_fn(
+    as_of: pd.Timestamp,
+    symbols: list[str],
+    price_data: dict[str, pd.DataFrame],
+    weights: dict | None = None,
+) -> pd.Series:
+    """Composite score using technical + quant groups only. Fundamental
+    inputs are unavailable point-in-time (see backtest/engine.py module
+    docstring), so the fundamental columns are passed through as NaN —
+    compute_composite_scores' weighted-mean-skipna redistributes weight
+    to whichever groups have data, and quant's value/quality/size
+    sub-factors (which depend on those same fundamental columns) collapse
+    to NaN too, leaving quant effectively momentum-only for now. Still
+    useful for validating the harness and for tuning the
+    technical-vs-quant balance once fundamentals aren't part of the mix.
+    """
+    rows = {}
+    for symbol in symbols:
+        df = price_data.get(symbol)
+        if df is None:
+            continue
+        history = df[df.index <= as_of]
+        if len(history) < 60:
+            continue
+        rows[symbol] = raw_technical_metrics(history)
+    if not rows:
+        return pd.Series(dtype=float)
+
+    technical_df = pd.DataFrame.from_dict(rows, orient="index")
+    fundamental_df = pd.DataFrame(index=technical_df.index, columns=_FUNDAMENTAL_COLUMNS, dtype=float)
+    composite = compute_composite_scores(fundamental_df, technical_df, weights=weights)
+    return composite["composite_score"]
+
+
+def make_weighted_score_fn(weights: dict) -> ScoreFn:
+    """Factory: bind a fixed weights dict to technical_quant_score_fn so
+    it matches the plain ScoreFn signature run_backtest expects.
+    """
+
+    def _fn(as_of: pd.Timestamp, symbols: list[str], price_data: dict[str, pd.DataFrame]) -> pd.Series:
+        return technical_quant_score_fn(as_of, symbols, price_data, weights=weights)
+
+    return _fn
 
 
 def run_backtest(
