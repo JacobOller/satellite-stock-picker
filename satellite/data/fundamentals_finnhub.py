@@ -7,10 +7,10 @@ first. Same interface shape as fundamentals.py (fetch_fundamentals_raw,
 refresh_fundamentals_cache, get_fundamentals, extract_factor_inputs) so
 either module can back the scoring engine without touching callers.
 
-NOTE: like fundamentals.py, field names here were assembled from public
-docs/blog examples, not verified against a live call (no API key
-available while this was written) — sanity-check extract_factor_inputs
-output against a real response before relying on it.
+NOTE: verified live 2026-08-02 against a real Finnhub key (5 symbols
+across sectors). roic and earnings_yield are not present anywhere in the
+free-tier metric=all response (confirmed by inspecting all 133 keys for
+MSFT) — they will always be None here, unlike FMP which provides both.
 """
 
 from __future__ import annotations
@@ -102,20 +102,32 @@ def extract_factor_inputs(raw: dict) -> dict:
                 return d[k]
         return None
 
+    def pct_to_fraction(value):
+        """Finnhub reports ROE/margins as percentages (33.2 = 33.2%);
+        FMP reports them as decimal fractions (0.332). Normalize to FMP's
+        convention so the two providers are truly interchangeable inputs
+        to score_fundamentals' cross-sectional percentile ranking —
+        otherwise a symbol sourced from the "wrong" provider would rank
+        as if its ROE were 100x everyone else's.
+        """
+        return value / 100 if value is not None else None
+
+    market_cap_millions = first(profile, "marketCapitalization")
+
     return {
         "symbol": raw.get("symbol"),
-        "market_cap": first(profile, "marketCapitalization"),  # Finnhub reports this in millions
+        "market_cap": market_cap_millions * 1_000_000 if market_cap_millions is not None else None,
         "sector": first(profile, "finnhubIndustry"),
         "industry": first(profile, "finnhubIndustry"),
         "pe_ratio": first(metric, "peTTM", "peExclExtraTTM", "peBasicExclExtraTTM", "peNormalizedAnnual"),
         "pb_ratio": first(metric, "pbAnnual", "pbQuarterly", "pb"),
         "fcf_yield": None,  # not directly provided by Finnhub's free basic-financials set
-        "roe": first(metric, "roeTTM", "roeRfy", "roeAnnual"),
-        "gross_margin": first(metric, "grossMarginTTM", "grossMarginAnnual"),
-        "net_margin": first(metric, "netProfitMarginTTM", "netMarginTTM", "netProfitMarginAnnual"),
+        "roe": pct_to_fraction(first(metric, "roeTTM", "roeRfy", "roeAnnual")),
+        "gross_margin": pct_to_fraction(first(metric, "grossMarginTTM", "grossMarginAnnual")),
+        "net_margin": pct_to_fraction(first(metric, "netProfitMarginTTM", "netMarginTTM", "netProfitMarginAnnual")),
         "debt_to_equity": first(metric, "totalDebt/totalEquityAnnual", "totalDebt/totalEquityQuarterly"),
-        "roic": first(metric, "roicTTM", "roicAnnual"),
-        "earnings_yield": first(metric, "earningsYieldTTM"),
+        "roic": None,  # not present in Finnhub's free metric=all response (checked live 2026-08-02)
+        "earnings_yield": None,  # not present in Finnhub's free metric=all response (checked live 2026-08-02)
     }
 
 

@@ -6,12 +6,11 @@ universe refresh (thousands of symbols) cannot happen in one day on the
 free tier — callers should budget/throttle via `max_symbols` and rely on
 the on-disk cache (FUNDAMENTALS_REFRESH_DAYS) to spread refreshes out.
 
-NOTE: exact FMP response field names were assembled from current public
-docs, not verified against a live call (no API key available while this
-module was written). `extract_factor_inputs` reads defensively with
-multiple candidate key names and returns None for anything missing, so it
-degrades gracefully rather than crashing — but it's worth a quick sanity
-check against real output the first time a key is added to `.env`.
+NOTE: field names verified live 2026-08-02 against a real FMP key (5
+symbols across sectors: MSFT, JPM, XOM, JNJ, KO) — all fields populated
+with sane values. `extract_factor_inputs` still reads defensively with
+multiple candidate key names and returns None for anything missing, in
+case free-tier field coverage varies by symbol.
 """
 
 from __future__ import annotations
