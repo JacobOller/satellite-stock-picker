@@ -148,16 +148,30 @@ actually tunes/validates these weights** before they're trusted live.
   holding-period returns as if they were sequential, non-overlapping
   events (they aren't — holding_days=42 vs. a ~10-trading-day rebalance
   step means ~4 cohorts are open at once).
+- [x] Found and fixed a second, more fundamental backtest bug while
+  investigating the drawdown: `run_backtest` picked the naive top-N by
+  score at every rebalance date with **no memory of what was already
+  held**. Since holding_days (42) spans ~4 rebalance steps, the same
+  top-scoring symbol got picked repeatedly — the first "fixed-drawdown"
+  rerun below resolved to only 17 distinct symbols across 100 trades
+  (CIEN picked 18/20 times, COHR 17/20), concentrating the simulated
+  portfolio in 2-3 volatile names instead of the diversified book
+  `satellite/ranker.py`'s `select_top_ideas` enforces live
+  (existing-holdings exclusion + `MAX_CONCURRENT_POSITIONS` cap).
+  `run_backtest` now tracks open positions with bar-accurate exit dates
+  and applies the same rules — see `satellite/backtest/engine.py`.
 - [x] Reran the walk-forward backtest (technical+quant only, 109 real
-  symbols, 5 windows, 100 test-period trades, 2026-08-02) with the fixed
-  methodology — see Progress log for the honest numbers, including a
-  materially worse drawdown than the old (buggy) calculation implied.
+  symbols, 5 windows, 2026-08-02) with **both** fixes (daily-portfolio
+  drawdown + position tracking) — see Progress log for the numbers.
+  Note the position-tracking fix means far fewer trades resolve per
+  window (the account-level concurrent-position cap fills up fast), so
+  even 109 candidate symbols only produced 40 test-period trades.
 - [ ] Decide go/no-go on live use based on backtest performance — **open,
-  and it's the user's call**: the corrected max drawdown (-31.46% vs.
-  SPY's -8.88% over the same test window) is a meaningfully different
-  risk picture than anything reported before the methodology fix, and
-  this is still technical+quant only (no fundamental factor validated
-  in backtest, per the caveat above).
+  and it's the user's call**: current best numbers (technical+quant
+  only, corrected methodology) show max drawdown -28.27% vs. SPY's
+  -8.88% over the same ~8-month test window. Sample size is still small
+  (40 trades, 9 rebalance periods) — see the note below on what would
+  actually improve statistical power here.
 
 **Phase 3 — Live daily operation**
 - Wire up daily scheduled run.
@@ -247,13 +261,44 @@ sequential. Reran the walk-forward backtest (technical+quant only, 109
 real symbols, 5 windows, 100 test-period trades, test period 2025-09
 through 2026-05): overall test avg return +15.33% per idea, 65.88% hit
 rate, 76.47% win rate vs. SPY per rebalance period. With the corrected
-equity curve: **strategy total return +50.53%, max drawdown -31.46%**
-vs. **SPY buy-and-hold total return +13.49%, max drawdown -8.88%** over
-the same window. This drawdown is materially worse than anything implied
-by the old (buggy) methodology — a real data point for the still-open
-go/no-go decision, not something to gloss over. 46 -> 51 tests (added
-`test_portfolio.py`, updated `test_fundamentals_finnhub.py`'s fixtures to
-match confirmed live units). Committed as `90d15aa`, `e676b01`, `7b219f5`.
+equity curve: strategy total return +50.53%, max drawdown -31.46% vs.
+SPY buy-and-hold total return +13.49%, max drawdown -8.88% over the same
+window. **Superseded by the next entry below — these numbers still had a
+second bug baked in.** 46 -> 51 tests (added `test_portfolio.py`, updated
+`test_fundamentals_finnhub.py`'s fixtures to match confirmed live units).
+Committed as `90d15aa`, `e676b01`, `7b219f5`.
+
+**2026-08-02 (evening) — Second backtest bug found: no open-position
+tracking.** While investigating what was driving the -31.46% drawdown
+above, found that `run_backtest` picked the naive top-N by score at every
+rebalance date with no memory of what was already held. Since
+holding_days (42) spans ~4 rebalance steps, the same top-scoring symbol
+got picked over and over: the 100 trades behind the number above resolved
+to only **17 distinct symbols**, with CIEN picked 18/20 times and COHR
+17/20 — the simulated portfolio was concentrated in 2-3 volatile momentum
+names instead of the diversified 5-8-position book
+`satellite/ranker.py`'s `select_top_ideas` actually enforces live. Fixed
+`run_backtest` to track open positions (bar-accurate exit dates via new
+`position_exit_date`) and apply the same existing-holdings-exclusion +
+`MAX_CONCURRENT_POSITIONS` cap the live path uses. Added regression tests
+for both new behaviors. Committed as `3b58f6a`.
+
+Reran the walk-forward backtest with **both** fixes in place (same 109
+symbols, 5 windows): only 40 test-period trades resolved this time (the
+account-level position cap fills up fast, so more candidate symbols
+mostly changes *which* 8 names are held, not how many trades happen).
+Overall test avg return +12.40% per idea, 62.16% hit rate. Corrected
+equity curve: **strategy total return +39.87%, max drawdown -28.27%**
+vs. **SPY total return +13.49%, max drawdown -8.88%** — still a
+meaningfully worse risk profile than the benchmark, though a bit less
+extreme than the concentrated-position number above. This is the current
+best estimate; go/no-go is still the user's call (see Phase 2 checklist).
+Realized mid-investigation that expanding the candidate universe (more
+tickers) won't meaningfully improve statistical power here, since
+`MAX_CONCURRENT_POSITIONS=8` is a fixed account-design constraint
+regardless of universe size — a **longer historical backtest window**
+(more independent market regimes) would be the actual lever, not a wider
+symbol list. Logged as an open question below.
 
 ## Open questions to revisit later
 
@@ -272,3 +317,10 @@ match confirmed live units). Committed as `90d15aa`, `e676b01`, `7b219f5`.
   need to be backtested, that likely means either a paid FMP tier or
   finding a different historical-fundamentals source — not a "wait for a
   bigger free-tier budget" problem.
+- Backtest statistical power: current walk-forward only covers ~8 months
+  of test-period observations (40 trades, 9 rebalance periods) because
+  price history was only fetched with yfinance's `period="2y"`. Since
+  `MAX_CONCURRENT_POSITIONS=8` is a fixed account-design constraint, a
+  wider candidate universe doesn't add more trades — a longer historical
+  window (5-10y price history, more independent market regimes) would.
+  Worth doing before treating any go/no-go call as solid.
