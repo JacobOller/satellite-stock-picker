@@ -191,6 +191,12 @@ see the Phase 2 caveat above (overlapping-period drawdown calc,
 missing fundamental factor). Full output saved to a local scratch dir,
 not committed (it's a one-off run, not the harness itself).
 
+Also added `satellite/data/fundamentals_finnhub.py`, a Finnhub client
+mirroring the FMP fundamentals client's interface — Finnhub's free tier
+(60 calls/min) is far less constrained than FMP's (~250/day), so it's a
+ready swap-in once the user picks a provider and gets a key. 46 tests
+total. Committed as `1fc8b42`, `183ba96`, `0858f9c`.
+
 ## Open questions to revisit later
 
 - Exact factor weights — determined empirically via backtesting, not fixed
