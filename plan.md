@@ -166,12 +166,19 @@ actually tunes/validates these weights** before they're trusted live.
   Note the position-tracking fix means far fewer trades resolve per
   window (the account-level concurrent-position cap fills up fast), so
   even 109 candidate symbols only produced 40 test-period trades.
+- [x] Extended price history from 2y to 10y (yfinance, no key needed) and
+  reran the walk-forward backtest for real statistical power: 120
+  test-period trades across 30 rebalance periods spanning ~2.5 years
+  (2024-02 through 2026-07), vs. 40 trades / 9 periods / ~8 months
+  before. See Progress log for the current best numbers.
 - [ ] Decide go/no-go on live use based on backtest performance — **open,
   and it's the user's call**: current best numbers (technical+quant
-  only, corrected methodology) show max drawdown -28.27% vs. SPY's
-  -8.88% over the same ~8-month test window. Sample size is still small
-  (40 trades, 9 rebalance periods) — see the note below on what would
-  actually improve statistical power here.
+  only, corrected methodology, 2.5y test window) show strategy total
+  return +195.45% vs. SPY's +55.76%, max drawdown -31.44% vs. SPY's
+  -18.76%. The strategy beats the benchmark on both return and (now that
+  the sample covers more regimes) the risk gap is smaller than the
+  short-window estimate suggested — but a -31% drawdown on a satellite
+  account is still a real number to sit with before trusting this live.
 
 **Phase 3 — Live daily operation**
 - Wire up daily scheduled run.
@@ -298,7 +305,28 @@ tickers) won't meaningfully improve statistical power here, since
 `MAX_CONCURRENT_POSITIONS=8` is a fixed account-design constraint
 regardless of universe size — a **longer historical backtest window**
 (more independent market regimes) would be the actual lever, not a wider
-symbol list. Logged as an open question below.
+symbol list.
+
+**2026-08-02 (evening, continued) — Extended history to 10y, reran for
+real statistical power.** Refetched all 111 cached symbols (incl. SPY)
+via yfinance with `period="10y"` instead of the original `"2y"` (2016-08
+through 2026-07, ~2,514 bars each, no API key needed — this is pure
+price data via yfinance). Reran the same walk-forward config: **15
+windows, 120 test-period trades, 30 rebalance periods, test window
+2024-02 through 2026-07 (~2.5 years)** — a much better-powered sample
+than the 40-trade/9-period/~8-month estimate above. Overall test avg
+return +8.15% per idea, 65% hit rate, return range -44.16% to +71.35%.
+Corrected equity curve: **strategy total return +195.45%, max drawdown
+-31.44%** vs. **SPY buy-and-hold total return +55.76%, max drawdown
+-18.76%** — 66.67% win rate vs. benchmark per rebalance period, mean
+excess return +4.6pp/period. Notably, the *relative* drawdown gap
+(1.7x SPY's) is smaller than the short-window estimate implied (3.2x) —
+the earlier comparison was skewed by SPY happening to have an unusually
+calm max drawdown in that particular 8-month slice. This is the current
+best estimate for the technical+quant-only strategy; fundamentals still
+aren't backtestable (FMP free-tier wall, confirmed earlier this session).
+Go/no-go remains the user's call. 55 tests, no new ones needed for this
+step (data refresh + rerun only, no code changes).
 
 ## Open questions to revisit later
 
@@ -317,10 +345,8 @@ symbol list. Logged as an open question below.
   need to be backtested, that likely means either a paid FMP tier or
   finding a different historical-fundamentals source — not a "wait for a
   bigger free-tier budget" problem.
-- Backtest statistical power: current walk-forward only covers ~8 months
-  of test-period observations (40 trades, 9 rebalance periods) because
-  price history was only fetched with yfinance's `period="2y"`. Since
-  `MAX_CONCURRENT_POSITIONS=8` is a fixed account-design constraint, a
-  wider candidate universe doesn't add more trades — a longer historical
-  window (5-10y price history, more independent market regimes) would.
-  Worth doing before treating any go/no-go call as solid.
+- ~~Backtest statistical power: current walk-forward only covers ~8
+  months...~~ addressed 2026-08-02: extended cached price history to 10y,
+  walk-forward now covers 2.5 years / 120 trades / 30 periods. Could still
+  go further (full 3,588-symbol universe, not just the 111-symbol
+  leftover sample) if the go/no-go call ends up close.
