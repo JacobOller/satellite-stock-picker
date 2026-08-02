@@ -180,9 +180,22 @@ actually tunes/validates these weights** before they're trusted live.
   short-window estimate suggested — but a -31% drawdown on a satellite
   account is still a real number to sit with before trusting this live.
 
-**Phase 3 — Live daily operation**
-- Wire up daily scheduled run.
-- Push-notification alert formatting.
+**Phase 3 — Live daily operation** 🚧 mechanism built, not yet activated
+- [x] Alert formatting: `satellite/alert.py` (`format_alert`) — pure
+  function, top 3-5 ideas with ticker, composite score, short rationale
+  (which factor group led), suggested position size. Fully tested.
+- [x] Scan orchestration: `satellite/scan.py` (`run_scan`,
+  `collect_universe_scores`) wires universe -> data ingestion -> scoring
+  -> ranker -> sizing -> formatted alert, using Finnhub for fundamentals
+  (higher free-tier budget than FMP). `python -m satellite.scan
+  <account_value>` runs a manual dry run over whatever's already cached
+  — verified working end-to-end 2026-08-02 (110 symbols, 5 ideas
+  formatted correctly).
+- [ ] Wire up daily scheduled run — **deliberately not done yet**. This
+  mechanism is not hooked to any scheduler or push notification. Turning
+  it on is a decision for the user once satisfied with backtest results
+  (Phase 2's go/no-go item, still open) — CLAUDE.md is explicit that's
+  not something to default into autonomously.
 - ~~Manual account-value config + position sizing output.~~ done early,
   see Phase 1.
 
@@ -327,6 +340,19 @@ best estimate for the technical+quant-only strategy; fundamentals still
 aren't backtestable (FMP free-tier wall, confirmed earlier this session).
 Go/no-go remains the user's call. 55 tests, no new ones needed for this
 step (data refresh + rerun only, no code changes).
+
+**2026-08-02 (evening, continued) — Phase 3 mechanism built.** Added
+`satellite/alert.py` (pure `format_alert`/`format_idea_line`, 5 new
+tests) and `satellite/scan.py` (I/O orchestration: refreshes
+prices/fundamentals, scores, ranks, sizes, formats — untested by design,
+same pattern as `prices.py`/`fundamentals*.py`). `python -m
+satellite.scan <account_value>` runs a manual dry run over whatever's
+already cached; verified against 110 real symbols, correctly producing 5
+ranked ideas with rationale and position sizing. This is groundwork
+only — **not** wired to a scheduler or push notification, since the
+Phase 2 go/no-go decision is still open and CLAUDE.md is explicit that
+turning on a live daily alert isn't something to default into. 60 tests
+total. Committed as `48d095b`.
 
 ## Open questions to revisit later
 
