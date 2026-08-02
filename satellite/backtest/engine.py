@@ -34,6 +34,7 @@ from typing import Callable
 import pandas as pd
 
 from satellite.config import MAX_CONCURRENT_POSITIONS
+from satellite.ranker import select_top_ideas
 from satellite.scoring.composite import compute_composite_scores
 from satellite.scoring.technical import raw_technical_metrics, score_technicals
 
@@ -154,12 +155,11 @@ def run_backtest(
     """Returns a trades DataFrame: one row per (rebalance_date, symbol)
     pick, with columns [date, symbol, score, forward_return].
 
-    Tracks open positions across rebalance dates the same way the live
-    ranker does: a symbol already held is never picked again until its
-    holding period ends, and total concurrent positions are capped at
-    max_concurrent_positions — without this, the same top-scoring symbol
-    can dominate every rebalance since holding_days usually spans several
-    rebalance steps (see this module's docstring).
+    Tracks open positions across rebalance dates and delegates the actual
+    picking to satellite.ranker.select_top_ideas — the same function the
+    live path uses — rather than reimplementing exclusion/cap logic here,
+    so the two can't silently drift apart (e.g. a future sector-diversity
+    rule added to the ranker automatically applies in backtests too).
     """
     symbols = list(price_data.keys())
     records = []
@@ -168,22 +168,26 @@ def run_backtest(
     for as_of in rebalance_dates:
         open_positions = {sym: exit for sym, exit in open_positions.items() if exit > as_of}
 
-        open_slots = max_concurrent_positions - len(open_positions)
-        if open_slots <= 0:
-            continue
-
         scores = score_fn(as_of, symbols, price_data)
         if scores.empty:
             continue
-        candidates = scores[~scores.index.isin(open_positions)]
-        picks = candidates.sort_values(ascending=False).head(min(top_n, open_slots))
 
-        for symbol, score in picks.items():
+        scored_df = pd.DataFrame({"composite_score": scores})
+        picks = select_top_ideas(
+            scored_df,
+            existing_holdings=set(open_positions.keys()),
+            top_n_max=top_n,
+            max_concurrent_positions=max_concurrent_positions,
+        )
+
+        for symbol, row in picks.iterrows():
             ret = forward_return(price_data[symbol], as_of, holding_days)
             exit_date = position_exit_date(price_data[symbol], as_of, holding_days)
             if exit_date is not None:
                 open_positions[symbol] = exit_date
-            records.append({"date": as_of, "symbol": symbol, "score": score, "forward_return": ret})
+            records.append(
+                {"date": as_of, "symbol": symbol, "score": row["composite_score"], "forward_return": ret}
+            )
 
     return pd.DataFrame.from_records(records, columns=["date", "symbol", "score", "forward_return"])
 
