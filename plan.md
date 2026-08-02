@@ -115,21 +115,39 @@ actually tunes/validates these weights** before they're trusted live.
 
 ## Roadmap
 
-**Phase 1 — Foundations**
-- Universe list fetch/cache.
-- Data ingestion layer (price + fundamentals) with local caching.
-- Scoring engine skeleton with placeholder weights.
-- Backtest harness (data replay + metrics).
+**Phase 1 — Foundations** ✅ done (2026-08-02)
+- [x] Universe list fetch/cache.
+- [x] Data ingestion layer (price + fundamentals) with local caching.
+- [x] Scoring engine skeleton with placeholder weights.
+- [x] Backtest harness (data replay + metrics).
+- [x] Ranker (top-N selection, diversification filter) — pulled forward
+  from Phase 3, since it's cheap plumbing and the backtester needs it too.
+- [x] Position sizing / satellite-exposure tracking — pulled forward from
+  Phase 3 for the same reason; no live account connection involved.
 
-**Phase 2 — Strategy validation**
-- Implement all three factor groups fully.
-- Run walk-forward backtests, tune weights, document results.
-- Decide go/no-go on live use based on backtest performance.
+**Phase 2 — Strategy validation** 🚧 in progress, partially blocked
+- [x] Walk-forward backtest mechanism (train/test windowing, weight
+  selection on train, out-of-sample evaluation on test).
+- [ ] Implement all three factor groups fully — **blocked**: fundamentals
+  ingestion code is written (`satellite/data/fundamentals.py`) but
+  untested against a live API, since no FMP (or Finnhub) key exists yet.
+  Needs the user to sign up and add a key to `.env`.
+- [ ] Run walk-forward backtests, tune weights, document results — a
+  technical+quant-only walk-forward ran successfully on 99 real S&P 500
+  symbols (2026-08-02, see Progress log below) as a mechanism check, but
+  this is **not** a strategy validation: no fundamental factor, and the
+  aggregate drawdown figure is methodologically shaky (built from
+  overlapping 42-day holding periods sampled every ~10 trading days,
+  which isn't a valid non-overlapping equity curve). Needs redoing once
+  fundamentals are wired in and the metrics harness handles overlapping
+  positions properly.
+- [ ] Decide go/no-go on live use based on backtest performance.
 
 **Phase 3 — Live daily operation**
 - Wire up daily scheduled run.
 - Push-notification alert formatting.
-- Manual account-value config + position sizing output.
+- ~~Manual account-value config + position sizing output.~~ done early,
+  see Phase 1.
 
 **Phase 4 — Future enhancements (not yet scoped in detail)**
 - Stop-loss / exit logic (fixed %, ATR-based, or technical-level — revisit
@@ -137,6 +155,41 @@ actually tunes/validates these weights** before they're trusted live.
 - Swap manual account entry for Alpaca API (account data first, possibly
   semi-automated order placement later, always with confirmation).
 - Reassess data budget if free-tier limits become a bottleneck.
+
+## Progress log
+
+**2026-08-02 — Phase 1 foundations built.** Universe fetch/cache
+(S&P 500 via Wikipedia + Nasdaq-listed common stock, ~3,588 tickers),
+yfinance price ingestion, FMP fundamentals ingestion (code-complete,
+unverified live — no API key available), a three-group scoring engine
+(fundamental/technical/quant + composite blend), and a backtest replay
+engine with hit-rate/drawdown/benchmark metrics. 30 tests. Verified
+end-to-end on a real 15-symbol S&P 500 sample, including graceful
+degradation to technical+quant-only scoring when fundamentals are
+unavailable. Committed as `9a99e3f`.
+
+**2026-08-02 — Ranker, position sizing, walk-forward harness added.**
+Built while the user was away for ~1hr with standing permission to work
+without asking and to skip anything requiring a security choice (so: no
+FMP/Finnhub signup, no `.env` changes). Added `satellite/ranker.py`
+(top-N selection, existing-holdings exclusion, concurrent-position cap,
+optional sector-diversification filter) and `satellite/risk.py` (manual
+account-value position sizing, aggregate satellite-exposure tracking) —
+both pulled forward from Phase 3 since they're pure/local and the
+backtester benefits from having them too. Added
+`satellite/backtest/walkforward.py`: slices rebalance dates into
+train/test windows, grid-searches the technical-vs-quant weight balance
+on the train window, evaluates out-of-sample on the test window. 14 new
+tests (44 total).
+
+Ran a 100-symbol (99 usable) real-data walk-forward backtest, 2024-05
+through 2026-03, technical+quant-only (no fundamentals available): 16
+windows, 45 test-period observations, mean test return +6.7% vs. SPY's
++2.8% over the same ~42-trading-day holding periods, 67% win rate vs.
+benchmark. **Treat this as a plumbing check, not a strategy result** —
+see the Phase 2 caveat above (overlapping-period drawdown calc,
+missing fundamental factor). Full output saved to a local scratch dir,
+not committed (it's a one-off run, not the harness itself).
 
 ## Open questions to revisit later
 
@@ -146,3 +199,9 @@ actually tunes/validates these weights** before they're trusted live.
   ranking.
 - Whether daily cadence proves too noisy vs. the weeks-months holding
   period once live — may revisit to weekly.
+- Backtest metrics currently treat sequential rebalance-period returns as
+  if non-overlapping when building the equity curve / drawdown figure,
+  but holding_days (42) is longer than the rebalance step (~10 trading
+  days), so positions actually overlap. Needs either non-overlapping
+  sampling or a proper portfolio-level simulation before drawdown numbers
+  can be trusted for a go/no-go call.
