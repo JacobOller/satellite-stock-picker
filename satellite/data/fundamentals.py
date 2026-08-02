@@ -124,6 +124,18 @@ def extract_factor_inputs(raw: dict) -> dict:
                 return d[k]
         return None
 
+    def first_of(*dict_key_pairs):
+        """Like first(), but searches across multiple (dict, key) sources
+        in order — needed because FMP splits fields across ratios_ttm and
+        key_metrics_ttm inconsistently (e.g. ROE and FCF yield live in
+        key_metrics_ttm, not ratios_ttm). Checks `is not None`, not
+        truthiness, so a legitimate 0.0 isn't skipped.
+        """
+        for d, key in dict_key_pairs:
+            if key in d and d[key] is not None:
+                return d[key]
+        return None
+
     return {
         "symbol": raw.get("symbol"),
         "market_cap": first(profile, "marketCap", "mktCap"),
@@ -131,8 +143,8 @@ def extract_factor_inputs(raw: dict) -> dict:
         "industry": first(profile, "industry"),
         "pe_ratio": first(ratios, "priceToEarningsRatioTTM", "peRatioTTM"),
         "pb_ratio": first(ratios, "priceToBookRatioTTM", "pbRatioTTM"),
-        "fcf_yield": first(ratios, "freeCashFlowYieldTTM"),
-        "roe": first(ratios, "returnOnEquityTTM"),
+        "fcf_yield": first_of((metrics, "freeCashFlowYieldTTM"), (ratios, "freeCashFlowYieldTTM")),
+        "roe": first_of((metrics, "returnOnEquityTTM"), (ratios, "returnOnEquityTTM")),
         "gross_margin": first(ratios, "grossProfitMarginTTM"),
         "net_margin": first(ratios, "netProfitMarginTTM"),
         "debt_to_equity": first(ratios, "debtToEquityRatioTTM", "debtEquityRatioTTM"),
