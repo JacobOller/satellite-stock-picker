@@ -128,20 +128,36 @@ actually tunes/validates these weights** before they're trusted live.
 **Phase 2 — Strategy validation** 🚧 in progress, partially blocked
 - [x] Walk-forward backtest mechanism (train/test windowing, weight
   selection on train, out-of-sample evaluation on test).
-- [ ] Implement all three factor groups fully — **blocked**: fundamentals
-  ingestion code is written (`satellite/data/fundamentals.py`) but
-  untested against a live API, since no FMP (or Finnhub) key exists yet.
-  Needs the user to sign up and add a key to `.env`.
-- [ ] Run walk-forward backtests, tune weights, document results — a
-  technical+quant-only walk-forward ran successfully on 99 real S&P 500
-  symbols (2026-08-02, see Progress log below) as a mechanism check, but
-  this is **not** a strategy validation: no fundamental factor, and the
-  aggregate drawdown figure is methodologically shaky (built from
-  overlapping 42-day holding periods sampled every ~10 trading days,
-  which isn't a valid non-overlapping equity curve). Needs redoing once
-  fundamentals are wired in and the metrics harness handles overlapping
-  positions properly.
-- [ ] Decide go/no-go on live use based on backtest performance.
+- [x] Implement all three factor groups fully — both FMP and Finnhub keys
+  are live in `.env` and verified against real data (2026-08-02). Fixed a
+  real Finnhub/FMP unit mismatch (market cap millions-vs-absolute,
+  percent-vs-decimal ROE/margins) that would have silently corrupted
+  cross-sectional scoring if a symbol's data came from a different
+  provider than its peers. Full composite pipeline (fundamental +
+  technical + quant) validated end-to-end on 110 real S&P 500 symbols —
+  fundamental_score populated for 109/110. **Caveat:** this wires
+  fundamentals into *live/current-day* scoring only. Point-in-time
+  historical fundamentals for backtesting remain infeasible — FMP's free
+  tier returns 402 (payment required) on the historical/quarterly ratios
+  endpoint (confirmed live 2026-08-02), so the walk-forward backtest
+  below is still technical+quant only, same as before.
+- [x] Fixed the overlapping-holding-period drawdown bug flagged below:
+  added `satellite/backtest/portfolio.py` (`daily_portfolio_returns`),
+  which marks every open position to market daily and equal-weights
+  whatever cohorts are open that day, instead of chaining full 42-day
+  holding-period returns as if they were sequential, non-overlapping
+  events (they aren't — holding_days=42 vs. a ~10-trading-day rebalance
+  step means ~4 cohorts are open at once).
+- [x] Reran the walk-forward backtest (technical+quant only, 109 real
+  symbols, 5 windows, 100 test-period trades, 2026-08-02) with the fixed
+  methodology — see Progress log for the honest numbers, including a
+  materially worse drawdown than the old (buggy) calculation implied.
+- [ ] Decide go/no-go on live use based on backtest performance — **open,
+  and it's the user's call**: the corrected max drawdown (-31.46% vs.
+  SPY's -8.88% over the same test window) is a meaningfully different
+  risk picture than anything reported before the methodology fix, and
+  this is still technical+quant only (no fundamental factor validated
+  in backtest, per the caveat above).
 
 **Phase 3 — Live daily operation**
 - Wire up daily scheduled run.
@@ -197,6 +213,48 @@ mirroring the FMP fundamentals client's interface — Finnhub's free tier
 ready swap-in once the user picks a provider and gets a key. 46 tests
 total. Committed as `1fc8b42`, `183ba96`, `0858f9c`.
 
+**2026-08-02 (later same day) — Fundamentals unblocked, drawdown methodology
+fixed, walk-forward rerun.** User provided a Finnhub API key; FMP key was
+already in `.env` from earlier the same day. Both verified live against 5
+real symbols (MSFT, JPM, XOM, JNJ, KO) — field names and value ranges
+check out. Found and fixed a real bug in `fundamentals_finnhub.py`: it
+returned market cap in millions and ROE/margins as percentages while FMP
+uses absolute dollars and decimal fractions — both modules claim the same
+interface, so a symbol sourced from the "wrong" provider relative to its
+peers would have silently ranked as if its ROE were ~100x everyone
+else's under `score_fundamentals`' cross-sectional percentile ranking.
+Also fixed `fundamentals.py`'s ROE/FCF-yield extraction to check
+`key_metrics_ttm` before `ratios_ttm` (verified live: `ratios_ttm` doesn't
+reliably carry those fields). Confirmed `roic`/`earnings_yield` don't
+exist anywhere in Finnhub's free `metric=all` response (133 keys checked
+for MSFT) — hardcoded `None` there rather than a dead lookup.
+
+Validated the full three-factor composite pipeline end-to-end on 110 real
+S&P 500 symbols using cached prices + live Finnhub fundamentals:
+`fundamental_score` populated for 109/110, `technical_score` for 110/110,
+`composite_score` for all 110 — this is the "Implement all three factor
+groups fully" roadmap item, done for live/current-day scoring. Tried to
+extend this to backtesting (point-in-time historical fundamentals) but
+FMP's free tier returns 402 on the historical/quarterly ratios endpoint —
+confirmed infeasible on free tier, not just a rate-limit issue.
+
+Fixed the overlapping-holding-period drawdown bug logged in the prior
+session's Progress log entry: added `satellite/backtest/portfolio.py`
+(`daily_portfolio_returns` + `benchmark_daily_returns`), which builds a
+proper daily mark-to-market equity curve across overlapping rebalance
+cohorts instead of chaining full 42-day holding-period returns as if
+sequential. Reran the walk-forward backtest (technical+quant only, 109
+real symbols, 5 windows, 100 test-period trades, test period 2025-09
+through 2026-05): overall test avg return +15.33% per idea, 65.88% hit
+rate, 76.47% win rate vs. SPY per rebalance period. With the corrected
+equity curve: **strategy total return +50.53%, max drawdown -31.46%**
+vs. **SPY buy-and-hold total return +13.49%, max drawdown -8.88%** over
+the same window. This drawdown is materially worse than anything implied
+by the old (buggy) methodology — a real data point for the still-open
+go/no-go decision, not something to gloss over. 46 -> 51 tests (added
+`test_portfolio.py`, updated `test_fundamentals_finnhub.py`'s fixtures to
+match confirmed live units). Committed as `90d15aa`, `e676b01`, `7b219f5`.
+
 ## Open questions to revisit later
 
 - Exact factor weights — determined empirically via backtesting, not fixed
@@ -205,9 +263,12 @@ total. Committed as `1fc8b42`, `183ba96`, `0858f9c`.
   ranking.
 - Whether daily cadence proves too noisy vs. the weeks-months holding
   period once live — may revisit to weekly.
-- Backtest metrics currently treat sequential rebalance-period returns as
-  if non-overlapping when building the equity curve / drawdown figure,
-  but holding_days (42) is longer than the rebalance step (~10 trading
-  days), so positions actually overlap. Needs either non-overlapping
-  sampling or a proper portfolio-level simulation before drawdown numbers
-  can be trusted for a go/no-go call.
+- ~~Backtest metrics currently treat sequential rebalance-period returns
+  as if non-overlapping...~~ fixed 2026-08-02, see
+  `satellite/backtest/portfolio.py` and the Phase 2 checklist above.
+- Point-in-time historical fundamentals for backtesting: confirmed
+  2026-08-02 that FMP's free tier blocks the historical/quarterly ratios
+  endpoint outright (402), not just rate-limits it. If fundamentals ever
+  need to be backtested, that likely means either a paid FMP tier or
+  finding a different historical-fundamentals source — not a "wait for a
+  bigger free-tier budget" problem.
