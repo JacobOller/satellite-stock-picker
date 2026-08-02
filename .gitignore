@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+data_cache/
+*.parquet
+*.sqlite
+*.log
+.pytest_cache/
+.ipynb_checkpoints/
