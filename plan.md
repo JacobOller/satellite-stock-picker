@@ -180,22 +180,63 @@ actually tunes/validates these weights** before they're trusted live.
   short-window estimate suggested — but a -31% drawdown on a satellite
   account is still a real number to sit with before trusting this live.
 
-**Phase 3 — Live daily operation** 🚧 mechanism built, not yet activated
+**Phase 3 — Live daily operation** ✅ activated 2026-08-03
 - [x] Alert formatting: `satellite/alert.py` (`format_alert`) — pure
   function, top 3-5 ideas with ticker, composite score, short rationale
   (which factor group led), suggested position size. Fully tested.
 - [x] Scan orchestration: `satellite/scan.py` (`run_scan`,
   `collect_universe_scores`) wires universe -> data ingestion -> scoring
   -> ranker -> sizing -> formatted alert, using Finnhub for fundamentals
-  (higher free-tier budget than FMP). `python -m satellite.scan
-  <account_value>` runs a manual dry run over whatever's already cached
-  — verified working end-to-end 2026-08-02 (110 symbols, 5 ideas
-  formatted correctly).
-- [ ] Wire up daily scheduled run — **deliberately not done yet**. This
-  mechanism is not hooked to any scheduler or push notification. Turning
-  it on is a decision for the user once satisfied with backtest results
-  (Phase 2's go/no-go item, still open) — CLAUDE.md is explicit that's
-  not something to default into autonomously.
+  (higher free-tier budget than FMP). Added a `use_fundamentals` flag for
+  environments without a fundamentals API key.
+- [x] **Go/no-go decision made 2026-08-03: user approved activating live
+  alerts.** Account value $250 (fresh, small, to be grown over time), no
+  existing holdings.
+- [x] Wire up daily scheduled run — went through two different
+  mechanisms before landing on one that actually works:
+  - **Cloud routine (abandoned):** pushed the repo to
+    `github.com/JacobOller/satellite-stock-picker` (private) and created
+    a `RemoteTrigger` cloud routine. Dead end: the cloud sandbox's
+    outbound network is broadly restricted and blocked BOTH
+    Wikipedia/Nasdaq (fixed via a bundled `satellite/universe_snapshot.csv`
+    fallback, see below) AND Yahoo Finance itself (yfinance is this
+    project's only price source — no workaround exists for that one).
+    Also: no way to hand a cloud routine the FMP/Finnhub API keys
+    securely (no secrets field in the routine config). Routine
+    `trig_01R3YUnNuDRMvcw69YhJ7HVP` is disabled, not deleted.
+  - **Local Windows Task Scheduler (active):** task
+    `SatelliteStockPickerDailyScan` runs weekdays at 8:15am ET, invoking
+    `claude.exe -p "..." --permission-mode bypassPermissions` (via a
+    `powershell.exe` wrapper that redirects output to
+    `daily_scan_task.log`) in this project directory. This has full
+    access to local `.env` (both API keys) and `data_cache/`, so it uses
+    the fuller fundamentals-included scan (`scripts/daily_scan.py`,
+    account_value/existing_holdings hardcoded there — update by hand as
+    the account changes). Two setup bugs found and fixed: (1)
+    `New-ScheduledTaskSettingsSet` defaults to
+    `DisallowStartIfOnBatteries=$true`, which silently left the task
+    stuck in "Queued" — fixed by passing `-AllowStartIfOnBatteries
+    -DontStopIfGoingOnBatteries`. (2) The first working run showed
+    "push notification was sent but not delivered to mobile (Remote
+    Control inactive)" — desktop notifications should still work; phone
+    push needs the user to separately enable Remote Control pairing,
+    which isn't something settable via CLI/API.
+- [x] Fixed a related bug found via the cloud routine's first failure:
+  `build_universe()` had no fallback if the live Wikipedia/Nasdaq fetch
+  failed (crashes the whole scan). Added `satellite/universe_snapshot.csv`
+  (checked into git, unlike the gitignored on-disk cache) as a
+  per-source fallback. Regenerate via `python -m satellite.universe
+  --refresh-snapshot`.
+- [x] Fixed a real test-hygiene bug found while debugging the above: two
+  `tests/test_universe.py` tests called `build_universe(force_refresh=
+  True)` with mocked fetchers, and `build_universe()` unconditionally
+  persists its result to the real on-disk cache — so running `pytest`
+  had been silently corrupting the local universe cache with mock data.
+  Fixed by monkeypatching `_CACHE_FILE` to a tmp path in both tests.
+- [x] Hardened `collect_universe_scores` (scan.py): if every fundamentals
+  fetch fails/returns nothing for any reason, `fundamental_df` now still
+  gets the right column shape instead of a columnless empty frame that
+  crashes `score_fundamentals` with a raw `KeyError`.
 - ~~Manual account-value config + position sizing output.~~ done early,
   see Phase 1.
 
@@ -409,6 +450,33 @@ CLAUDE.md's "run scoring changes through the backtester before trusting
 them" rule, and documented the finding directly in
 `score_technicals`' docstring so it isn't silently re-added later without
 re-testing. Committed as `d8baa15`. 61 tests.
+
+**2026-08-03 — Go/no-go decision made; live alerts activated.** User
+reviewed the backtest results and approved activating live alerts,
+account value $250 (fresh, small, to grow over time), no existing
+holdings. This took two failed infrastructure attempts before landing on
+a working setup — see the Phase 3 checklist above for full detail.
+Summary: pushed the repo to a new private GitHub repo and tried a cloud
+routine first (per the original plan), but the cloud sandbox's network
+policy blocked Yahoo Finance itself (yfinance is the only price source
+this project has), which is unfixable — no snapshot/fallback works for
+*live* daily prices the way it did for the mostly-static S&P 500 list.
+Pivoted to a local Windows Task Scheduler job instead (weekdays 8:15am
+ET, headless `claude -p` in this directory), which has full access to
+local `.env`/`data_cache/` and works. Along the way, fixed: (1) no
+fallback when `build_universe()`'s live fetch fails (added a bundled
+snapshot CSV), (2) a real test-hygiene bug where `test_universe.py` was
+silently corrupting the real local universe cache with mock data via an
+unpatched `_CACHE_FILE`, (3) `collect_universe_scores` crashing instead
+of degrading gracefully when fundamentals come back completely empty,
+(4) `New-ScheduledTaskSettingsSet`'s battery-power default silently
+stalling the task in "Queued" forever. First fully-successful run found
+5 ideas, top pick PANW (composite 98.9/100); push notification fired
+(desktop confirmed working; mobile push needs the user to separately
+enable Remote Control pairing — not something settable via CLI/API).
+63 tests. Committed as `5f5ade0` (plus earlier commits this session);
+Task Scheduler job and cloud routine are not tracked in git (external
+infra), documented here instead.
 
 ## Open questions to revisit later
 
