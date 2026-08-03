@@ -354,6 +354,45 @@ Phase 2 go/no-go decision is still open and CLAUDE.md is explicit that
 turning on a live daily alert isn't something to default into. 60 tests
 total. Committed as `48d095b`.
 
+**2026-08-02 (evening, continued) — Refactored run_backtest to reuse
+ranker.select_top_ideas; ran a full-S&P-500 robustness check.** Found
+`run_backtest`'s position-picking logic (added earlier this session)
+reimplemented `satellite.ranker.select_top_ideas`'s exclusion/cap rules
+independently instead of calling it — against CLAUDE.md's principle that
+scoring must run identically in the backtester and live scan. Refactored
+`run_backtest` to build a `composite_score` DataFrame each rebalance and
+call `select_top_ideas` directly; verified byte-identical output on the
+109-symbol run before/after (pure simplification). Committed as
+`5fe6886`.
+
+Fetched 10y price history for the full 503-symbol S&P 500 (yfinance, no
+key needed, all succeeded) to check whether the 109-symbol subset's
+result holds up over a bigger candidate pool. First attempt at a full
+walk-forward (weight-grid search per window) was killed after 25+
+minutes — too slow at 500-symbol scale (the grid search recomputes
+technical indicators for every symbol once per weight candidate). Instead
+ran a single-fixed-weight (0.7 technical / 0.3 quant, no train/test
+split) backtest over the full 500-symbol universe and full ~9.5-year
+history as a **robustness sanity check, not a walk-forward validation**:
+373 trades, 162 distinct symbols, avg return +8.53% per idea, 65.22% hit
+rate — both numbers landing within a point of the 109-symbol walk-forward
+result (+8.15%, 65%), a reassuring cross-check that the smaller sample
+wasn't a fluke of which symbols happened to be cached. Total return over
+the full window: strategy +4859.50% vs. SPY +254.91%; max drawdown
+-35.73% vs. SPY's own -33.72%. **Do not read the total-return figure at
+face value** — it's a single a-priori weight over 10 years including the
+NVDA/SMCI/PLTR/TSLA/AMD AI-and-semiconductor supercycle (the most-picked
+symbols list confirms this), not an out-of-sample validated result.
+The more informative takeaway: over this much longer window, SPY's own
+drawdown is close to the strategy's, unlike the short recent test windows
+above where SPY looked unusually calm — the relative-drawdown gap used
+for a go/no-go call is highly sensitive to which historical slice you
+look at, and that sensitivity is itself worth weighing, not just any one
+number. Also confirmed one script bug in the process (not shipped code):
+building "rebalance dates" from the shortest cached symbol's index breaks
+when the universe includes very recently listed constituents (HONA/FDXF,
+<50 bars) — fixed by anchoring to SPY's full index instead.
+
 ## Open questions to revisit later
 
 - Exact factor weights — determined empirically via backtesting, not fixed
@@ -362,6 +401,13 @@ total. Committed as `48d095b`.
   ranking.
 - Whether daily cadence proves too noisy vs. the weeks-months holding
   period once live — may revisit to weekly.
+- Walk-forward performance at full-universe scale: `run_walk_forward`'s
+  weight-grid search recomputes technical indicators for every symbol
+  once per weight candidate per date (5x redundant work), which was fine
+  at 109 symbols but too slow at 500 (killed after 25+ min). If a real
+  walk-forward validation across the full S&P 500 is ever needed, worth
+  caching raw_technical_metrics per (symbol, date) once and reusing it
+  across weight candidates, rather than the current per-call recompute.
 - ~~Backtest metrics currently treat sequential rebalance-period returns
   as if non-overlapping...~~ fixed 2026-08-02, see
   `satellite/backtest/portfolio.py` and the Phase 2 checklist above.
