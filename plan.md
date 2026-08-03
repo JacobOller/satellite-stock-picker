@@ -393,6 +393,23 @@ building "rebalance dates" from the shortest cached symbol's index breaks
 when the universe includes very recently listed constituents (HONA/FDXF,
 <50 bars) — fixed by anchoring to SPY's full index instead.
 
+**2026-08-02 (evening, continued) — Tested wiring RSI/MACD into the
+technical score; reverted, it hurt performance.** User asked what
+metrics drive stock selection, which surfaced that `raw_technical_metrics`
+computes `rsi14`/`macd_hist` but `score_technicals` never reads them —
+despite plan.md's own spec listing "momentum (RSI/MACD)" and the
+function's docstring implying they were used. Tried wiring them into the
+momentum component (ranked same-direction as price momentum, matching
+the system's buy-strength design rather than treating high RSI as
+contrarian). Backtested before/after on the full S&P 500 (identical
+fixed 0.7 technical / 0.3 quant weight, otherwise unchanged): avg return
+per idea +8.53% -> +4.09%, hit rate 65.22% -> 58.42%, max drawdown
+-35.73% -> -43.23%. A clear regression, not noise. Reverted per
+CLAUDE.md's "run scoring changes through the backtester before trusting
+them" rule, and documented the finding directly in
+`score_technicals`' docstring so it isn't silently re-added later without
+re-testing. Committed as `d8baa15`. 61 tests.
+
 ## Open questions to revisit later
 
 - Exact factor weights — determined empirically via backtesting, not fixed
