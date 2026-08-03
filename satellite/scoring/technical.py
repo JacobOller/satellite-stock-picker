@@ -99,9 +99,18 @@ def _percentile_rank(series: pd.Series) -> pd.Series:
 
 def score_technicals(df: pd.DataFrame) -> pd.Series:
     """Cross-sectional 0-100 technical score across the universe. df must
-    have columns: above_sma50, above_sma200, sma50_above_sma200, rsi14,
+    have columns: above_sma50, above_sma200, sma50_above_sma200,
     momentum_3m, momentum_6m, rel_strength_3m (as produced by
     raw_technical_metrics, collected into a DataFrame indexed by symbol).
+
+    raw_technical_metrics also computes rsi14/macd_hist, but they're
+    deliberately NOT read here. Tested 2026-08-02: wiring them into the
+    momentum component (ranked same-direction as price momentum) measurably
+    hurt the full-S&P-500 backtest -- avg return per idea +8.53% -> +4.09%,
+    hit rate 65.22% -> 58.42%, max drawdown -35.73% -> -43.23% (identical
+    config otherwise). Reverted per CLAUDE.md's "run scoring changes through
+    the backtester before trusting them" rule. If revisiting, treat this as
+    a new experiment to re-validate, not a "finish the plan.md spec" fix.
     """
     trend_component = (
         df[["above_sma50", "above_sma200", "sma50_above_sma200"]].astype("float").mean(axis=1) * 100

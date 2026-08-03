@@ -88,3 +88,22 @@ def test_score_technicals_ranks_stronger_trend_higher():
     )
     scores = score_technicals(df)
     assert scores["STRONG"] > scores["WEAK"]
+
+
+def test_score_technicals_ignores_rsi_and_macd():
+    # rsi14/macd_hist are computed by raw_technical_metrics but
+    # deliberately not used in scoring (see score_technicals' docstring --
+    # tested and reverted, it hurt backtest performance). Two symbols
+    # identical on every USED factor but different RSI/MACD should score
+    # identically, and score_technicals shouldn't require those columns.
+    base = {
+        "above_sma50": [True, True],
+        "above_sma200": [True, True],
+        "sma50_above_sma200": [True, True],
+        "momentum_3m": [0.1, 0.1],
+        "momentum_6m": [0.1, 0.1],
+        "rel_strength_3m": [0.05, 0.05],
+    }
+    df = pd.DataFrame(base, index=["A", "B"])
+    scores = score_technicals(df)
+    assert scores["A"] == scores["B"]
