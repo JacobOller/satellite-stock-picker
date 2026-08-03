@@ -1,13 +1,13 @@
 """Live scan orchestration: universe -> data ingestion -> scoring ->
 ranker -> sized, formatted alert, per plan.md's Architecture diagram.
 
-This wires up the mechanism only. It is NOT scheduled to run
-automatically and does NOT push a live notification anywhere — per
-CLAUDE.md's "Before trusting a strategy change live" rule, turning this
-into an actual daily push is a decision for the user to make once
-satisfied with backtest results (plan.md's Phase 2 go/no-go item is
-still open as of 2026-08-02). Run manually via `run_scan` to see what
-today's alert *would* say.
+Go/no-go decision made 2026-08-03: this now backs a real daily cloud
+routine (see plan.md Phase 3). The cloud environment has no access to
+local secrets/cache, so the routine calls run_scan(..., use_fundamentals
+=False) — technical+quant only, no API key needed (yfinance is keyless).
+This also exactly matches what the walk-forward backtest validated,
+since fundamentals were never backtestable on the free tier. Local runs
+can still pass use_fundamentals=True (the default) for the fuller scan.
 
 I/O-heavy by nature (network calls to yfinance/Finnhub), so — like
 satellite/data/prices.py and fundamentals*.py — this isn't unit tested
@@ -30,15 +30,44 @@ from satellite.scoring.technical import raw_technical_metrics
 
 MIN_PRICE_BARS = 210  # sma200 + slack, matches satellite.scoring.technical.MIN_BARS_REQUIRED
 
+# Same column set satellite.backtest.engine.py's technical_quant_score_fn
+# uses as an all-NaN placeholder when fundamentals aren't available, so
+# compute_composite_scores degrades to technical+quant only the same way
+# in both places (weighted-mean-skipna redistributes weight away from the
+# missing group; quant's value/quality/size sub-factors collapse to NaN).
+_FUNDAMENTAL_COLUMNS = [
+    "pe_ratio",
+    "pb_ratio",
+    "fcf_yield",
+    "roe",
+    "gross_margin",
+    "net_margin",
+    "roic",
+    "market_cap",
+]
 
-def collect_universe_scores(symbols: list[str], max_fundamentals_symbols: int | None = None) -> pd.DataFrame:
-    """Refresh cached prices + fundamentals for symbols and compute
-    composite scores. Uses Finnhub for fundamentals (60 calls/min free
-    tier vs. FMP's ~250/day total) so a large-universe scan doesn't blow
-    the daily budget — see satellite/data/fundamentals_finnhub.py.
+
+def collect_universe_scores(
+    symbols: list[str], max_fundamentals_symbols: int | None = None, use_fundamentals: bool = True
+) -> pd.DataFrame:
+    """Refresh cached prices (+ fundamentals, if use_fundamentals) for
+    symbols and compute composite scores. Uses Finnhub for fundamentals
+    (60 calls/min free tier vs. FMP's ~250/day total) so a large-universe
+    scan doesn't blow the daily budget — see
+    satellite/data/fundamentals_finnhub.py.
+
+    use_fundamentals=False skips the Finnhub fetch entirely and scores
+    technical+quant only — for environments with no fundamentals API key
+    available (e.g. the cloud routine, which has no access to local
+    .env). This exactly matches what the walk-forward backtest validated
+    (see plan.md): fundamentals were never included in a backtested
+    result, so a live alert using them would be running unvalidated
+    scoring logic, which CLAUDE.md's "backtest before trusting live"
+    rule is meant to prevent.
     """
     refresh_price_cache(symbols)
-    refresh_finnhub_fundamentals(symbols, max_symbols=max_fundamentals_symbols)
+    if use_fundamentals:
+        refresh_finnhub_fundamentals(symbols, max_symbols=max_fundamentals_symbols)
 
     fundamental_rows: dict[str, dict] = {}
     technical_rows: dict[str, dict] = {}
@@ -48,12 +77,16 @@ def collect_universe_scores(symbols: list[str], max_fundamentals_symbols: int | 
             continue
         technical_rows[symbol] = raw_technical_metrics(price_df)
 
-        fi = get_finnhub_fundamentals(symbol)
-        if fi is not None:
-            fundamental_rows[symbol] = raw_fundamental_metrics(fi)
+        if use_fundamentals:
+            fi = get_finnhub_fundamentals(symbol)
+            if fi is not None:
+                fundamental_rows[symbol] = raw_fundamental_metrics(fi)
 
     technical_df = pd.DataFrame.from_dict(technical_rows, orient="index")
-    fundamental_df = pd.DataFrame.from_dict(fundamental_rows, orient="index")
+    if use_fundamentals:
+        fundamental_df = pd.DataFrame.from_dict(fundamental_rows, orient="index")
+    else:
+        fundamental_df = pd.DataFrame(index=technical_df.index, columns=_FUNDAMENTAL_COLUMNS, dtype=float)
     return compute_composite_scores(fundamental_df, technical_df)
 
 
@@ -62,6 +95,7 @@ def run_scan(
     account_value: float,
     existing_holdings: set[str] | None = None,
     max_fundamentals_symbols: int | None = None,
+    use_fundamentals: bool = True,
 ) -> tuple[pd.DataFrame, str]:
     """Full pipeline: score the given symbols, rank into top new ideas
     (excluding existing_holdings, capped at MAX_CONCURRENT_POSITIONS),
@@ -70,7 +104,9 @@ def run_scan(
     Returns (sized_ideas_df, alert_text). Does not send/push anything —
     the caller decides what to do with alert_text.
     """
-    scored = collect_universe_scores(symbols, max_fundamentals_symbols=max_fundamentals_symbols)
+    scored = collect_universe_scores(
+        symbols, max_fundamentals_symbols=max_fundamentals_symbols, use_fundamentals=use_fundamentals
+    )
     ranked = select_top_ideas(scored, existing_holdings=existing_holdings)
     sized = add_suggested_sizes(ranked, account_value)
     alert_text = format_alert(sized, as_of=pd.Timestamp.now().normalize())
