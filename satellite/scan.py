@@ -83,9 +83,14 @@ def collect_universe_scores(
                 fundamental_rows[symbol] = raw_fundamental_metrics(fi)
 
     technical_df = pd.DataFrame.from_dict(technical_rows, orient="index")
-    if use_fundamentals:
+    if use_fundamentals and fundamental_rows:
         fundamental_df = pd.DataFrame.from_dict(fundamental_rows, orient="index")
     else:
+        # No fundamentals requested, OR every fetch failed/returned nothing
+        # (rate limit, outage, bad symbol list, etc.) -- either way,
+        # fundamental_df must still have the expected columns so
+        # score_fundamentals degrades to all-NaN gracefully instead of
+        # raising KeyError on a totally empty, columnless DataFrame.
         fundamental_df = pd.DataFrame(index=technical_df.index, columns=_FUNDAMENTAL_COLUMNS, dtype=float)
     return compute_composite_scores(fundamental_df, technical_df)
 

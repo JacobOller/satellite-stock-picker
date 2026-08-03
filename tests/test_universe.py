@@ -5,12 +5,19 @@ import pandas as pd
 from satellite import universe
 
 
-def test_build_universe_falls_back_to_snapshot_when_live_fetch_fails():
+def test_build_universe_falls_back_to_snapshot_when_live_fetch_fails(tmp_path, monkeypatch):
     # Regression test for the 2026-08-03 cloud routine failure: Wikipedia/
     # Nasdaq fetches can fail (403 from an outbound proxy, network issues,
     # etc.) in environments without a warm on-disk cache (e.g. the cloud
     # routine's fresh checkout). build_universe() must still return usable
     # data via the bundled snapshot rather than raising.
+    #
+    # _CACHE_FILE is patched to a tmp path so this test can never write
+    # into the real local data_cache/ (build_universe(force_refresh=True)
+    # always persists its result there as a side effect) -- an earlier
+    # version of this test didn't do this and silently corrupted the
+    # real local universe cache with mocked/fake data.
+    monkeypatch.setattr(universe, "_CACHE_FILE", tmp_path / "universe.parquet")
     with patch.object(universe, "_fetch_sp500", side_effect=RuntimeError("simulated 403")):
         with patch.object(universe, "_fetch_nasdaq_listed", side_effect=RuntimeError("simulated 403")):
             df = universe.build_universe(force_refresh=True)
@@ -20,7 +27,8 @@ def test_build_universe_falls_back_to_snapshot_when_live_fetch_fails():
     assert (df["source"] == "sp500").sum() > 400  # roughly the real S&P 500 size
 
 
-def test_build_universe_uses_live_fetch_when_only_one_source_fails():
+def test_build_universe_uses_live_fetch_when_only_one_source_fails(tmp_path, monkeypatch):
+    monkeypatch.setattr(universe, "_CACHE_FILE", tmp_path / "universe.parquet")
     fake_sp500 = pd.DataFrame({"symbol": ["ZZZ"], "name": ["Fake Live Co"], "source": ["sp500"]})
     with patch.object(universe, "_fetch_sp500", return_value=fake_sp500):
         with patch.object(universe, "_fetch_nasdaq_listed", side_effect=RuntimeError("simulated 403")):
